@@ -52,6 +52,7 @@ var accountAddCmd = &cobra.Command{
 				Title("Provider").
 				Options(
 					huh.NewOption("Beeper", "beeper"),
+					huh.NewOption("Matrix", "matrix"),
 				).
 				Value(&provider),
 		))
@@ -103,6 +104,54 @@ var accountAddCmd = &cobra.Command{
 			}
 			if err := p.SaveCredentials(&messages.BeeperCredentials{
 				AccessToken: strings.TrimSpace(accessToken),
+			}); err != nil {
+				return err
+			}
+		case "matrix":
+			var homeserverURL, userID, accessToken string
+			form = huh.NewForm(
+				huh.NewGroup(
+					huh.NewNote().
+						Title("Matrix Setup").
+						Description("Enter your Matrix homeserver details and access token."),
+				),
+				huh.NewGroup(
+					huh.NewInput().Title("Homeserver URL").Value(&homeserverURL).
+						Placeholder("https://matrix.example.com").
+						Validate(func(s string) error {
+							if strings.TrimSpace(s) == "" {
+								return fmt.Errorf("required")
+							}
+							return nil
+						}),
+					huh.NewInput().Title("User ID").Value(&userID).
+						Placeholder("@user:example.com").
+						Validate(func(s string) error {
+							if strings.TrimSpace(s) == "" {
+								return fmt.Errorf("required")
+							}
+							return nil
+						}),
+					huh.NewInput().Title("Access Token").Value(&accessToken).Password(true).
+						Validate(func(s string) error {
+							if strings.TrimSpace(s) == "" {
+								return fmt.Errorf("required")
+							}
+							return nil
+						}),
+				),
+			)
+			if err := form.Run(); err != nil {
+				return err
+			}
+			p, err := messages.NewMatrixProvider(acctDir)
+			if err != nil {
+				return err
+			}
+			if err := p.SaveCredentials(&messages.MatrixCredentials{
+				HomeserverURL: strings.TrimSpace(homeserverURL),
+				UserID:        strings.TrimSpace(userID),
+				AccessToken:   strings.TrimSpace(accessToken),
 			}); err != nil {
 				return err
 			}
@@ -398,6 +447,12 @@ func getManager(accountName string) (*messages.MessageManager, error) {
 	switch acct.Provider {
 	case "beeper":
 		p, err := messages.NewBeeperProvider(acctDir)
+		if err != nil {
+			return nil, err
+		}
+		provider = p
+	case "matrix":
+		p, err := messages.NewMatrixProvider(acctDir)
 		if err != nil {
 			return nil, err
 		}

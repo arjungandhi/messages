@@ -96,9 +96,9 @@ func (c *Config) Validate() error {
 	}
 	for name, acct := range c.Accounts {
 		switch acct.Provider {
-		case "beeper":
+		case "beeper", "matrix":
 		default:
-			return fmt.Errorf("account %q: unknown provider %q (must be beeper)", name, acct.Provider)
+			return fmt.Errorf("account %q: unknown provider %q (must be beeper or matrix)", name, acct.Provider)
 		}
 	}
 	return nil
