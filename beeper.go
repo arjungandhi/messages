@@ -9,6 +9,7 @@ import (
 
 	beeperapi "github.com/beeper/desktop-api-go"
 	"github.com/beeper/desktop-api-go/option"
+	"github.com/beeper/desktop-api-go/packages/param"
 )
 
 type BeeperCredentials struct {
@@ -26,6 +27,9 @@ func NewBeeperProvider(dir string) (*BeeperProvider, error) {
 }
 
 func (p *BeeperProvider) SaveCredentials(creds *BeeperCredentials) error {
+	if err := os.MkdirAll(p.dir, 0755); err != nil {
+		return fmt.Errorf("failed to create credentials directory: %w", err)
+	}
 	credsPath := filepath.Join(p.dir, "beeper_credentials.json")
 	data, err := json.MarshalIndent(creds, "", "  ")
 	if err != nil {
@@ -139,6 +143,13 @@ func (p *BeeperProvider) Sync() ([]Conversation, []Message, error) {
 
 	fmt.Printf("\n\nSynced %d conversations with %d total messages\n", len(conversations), len(allMessages))
 	return conversations, allMessages, nil
+}
+
+func (p *BeeperProvider) Send(ctx context.Context, chatID string, text string) error {
+	_, err := p.client.Messages.Send(ctx, chatID, beeperapi.MessageSendParams{
+		Text: param.NewOpt(text),
+	})
+	return err
 }
 
 func extractParticipantUIDs(participants []beeperapi.User) []string {

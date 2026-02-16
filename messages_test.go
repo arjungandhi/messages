@@ -1,6 +1,7 @@
 package messages
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -10,9 +11,17 @@ type mockProvider struct {
 	messages      []Message
 }
 
+func (m *mockProvider) Initialize() error { return nil }
+
 func (m *mockProvider) Sync() ([]Conversation, []Message, error) {
 	return m.conversations, m.messages, nil
 }
+
+func (m *mockProvider) Send(ctx context.Context, chatID string, text string) error {
+	return nil
+}
+
+var readWriteAccount = AccountConfig{Provider: "beeper", Read: true, Write: true}
 
 func TestMessageManager_Sync(t *testing.T) {
 	dir := t.TempDir()
@@ -37,7 +46,7 @@ func TestMessageManager_Sync(t *testing.T) {
 		},
 	}
 
-	mm, err := NewMessageManager(provider, dir)
+	mm, err := NewMessageManager(provider, readWriteAccount, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +114,7 @@ func TestMessageManager_Queries(t *testing.T) {
 		},
 	}
 
-	mm, err := NewMessageManager(provider, dir)
+	mm, err := NewMessageManager(provider, readWriteAccount, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,5 +164,32 @@ func TestMessageManager_Queries(t *testing.T) {
 	}
 	if len(convsByContact) != 2 {
 		t.Fatalf("expected 2 conversations for u1, got %d", len(convsByContact))
+	}
+}
+
+func TestMessageManager_PermissionDenied(t *testing.T) {
+	dir := t.TempDir()
+	provider := &mockProvider{}
+
+	// read-only account can't send
+	readOnly := AccountConfig{Provider: "beeper", Read: true, Write: false}
+	mm, err := NewMessageManager(provider, readOnly, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mm.Close()
+	if err := mm.Send(context.Background(), "chat1", "hello"); err == nil {
+		t.Error("expected error sending with read-only account")
+	}
+
+	// write-only account can't sync
+	writeOnly := AccountConfig{Provider: "beeper", Read: false, Write: true}
+	mm2, err := NewMessageManager(provider, writeOnly, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mm2.Close()
+	if err := mm2.Sync(); err == nil {
+		t.Error("expected error syncing with write-only account")
 	}
 }

@@ -1,6 +1,8 @@
 package messages
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
 	"time"
 )
@@ -57,22 +59,26 @@ type Message struct {
 }
 
 type MessageProvider interface {
+	Initialize() error
 	Sync() ([]Conversation, []Message, error)
+	Send(ctx context.Context, chatID string, text string) error
 }
 
 type MessageManager struct {
 	provider MessageProvider
+	account  AccountConfig
 	db       *DB
 }
 
-func NewMessageManager(provider MessageProvider, dir string) (*MessageManager, error) {
-	dbPath := filepath.Join(dir, "messages.db")
+func NewMessageManager(provider MessageProvider, acct AccountConfig, dbDir string) (*MessageManager, error) {
+	dbPath := filepath.Join(dbDir, "messages.db")
 	db, err := OpenDB(dbPath)
 	if err != nil {
 		return nil, err
 	}
 	return &MessageManager{
 		provider: provider,
+		account:  acct,
 		db:       db,
 	}, nil
 }
@@ -82,6 +88,9 @@ func (mm *MessageManager) Close() error {
 }
 
 func (mm *MessageManager) Sync() error {
+	if !mm.account.Read {
+		return fmt.Errorf("account does not have read permission")
+	}
 	conversations, messages, err := mm.provider.Sync()
 	if err != nil {
 		return err
@@ -93,6 +102,13 @@ func (mm *MessageManager) Sync() error {
 		return err
 	}
 	return nil
+}
+
+func (mm *MessageManager) Send(ctx context.Context, chatID string, text string) error {
+	if !mm.account.Write {
+		return fmt.Errorf("account does not have write permission")
+	}
+	return mm.provider.Send(ctx, chatID, text)
 }
 
 func (mm *MessageManager) GetMessagesForContact(contactUID string) ([]Message, error) {

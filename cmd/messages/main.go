@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,89 +10,225 @@ import (
 
 	"github.com/arjungandhi/messages"
 	"github.com/charmbracelet/huh"
-	"github.com/rwxrob/bonzai"
-	"github.com/rwxrob/bonzai/cmds/help"
-	"github.com/rwxrob/bonzai/comp"
+	"github.com/spf13/cobra"
 )
 
-var Cmd = &bonzai.Cmd{
-	Name:  "messages",
+var accountFlag string
+
+var rootCmd = &cobra.Command{
+	Use:   "messages",
 	Short: "manage your messages",
-	Cmds:  []*bonzai.Cmd{help.Cmd, initCmd, syncCmd, listCmd, getCmd, searchCmd},
-	Comp:  comp.CmdsOpts,
 }
 
-var initCmd = &bonzai.Cmd{
-	Name:  "init",
-	Short: "initialize beeper provider",
-	Do: func(x *bonzai.Cmd, args ...string) error {
+// --- account commands ---
+
+var accountCmd = &cobra.Command{
+	Use:   "account",
+	Short: "manage accounts",
+}
+
+var accountAddCmd = &cobra.Command{
+	Use:   "add <name>",
+	Short: "add a new account",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
 		cfg := messages.NewConfig()
 		if err := cfg.EnsureDir(); err != nil {
 			return err
 		}
-
-		provider, err := messages.NewBeeperProvider(cfg.Dir)
-		if err != nil {
+		if err := cfg.Load(); err != nil {
 			return err
 		}
 
-		existingCreds, _ := provider.LoadCredentials()
-		if existingCreds != nil && existingCreds.AccessToken != "" {
-			var replace bool
-			form := huh.NewForm(huh.NewGroup(
-				huh.NewConfirm().
-					Title("Existing credentials found").
-					Description("Delete and enter new credentials?").
-					Affirmative("Yes").
-					Negative("No, keep existing").
-					Value(&replace),
-			))
-			if err := form.Run(); err != nil {
-				return err
-			}
-			if !replace {
-				fmt.Fprintln(os.Stderr, "Keeping existing credentials.")
-				return nil
-			}
+		if _, ok := cfg.Accounts[name]; ok {
+			return fmt.Errorf("account %q already exists", name)
 		}
 
-		var accessToken string
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewNote().
-					Title("Beeper Setup").
-					Description("Enter your Beeper access token.\nYou can find this in Beeper Desktop settings."),
-			),
-			huh.NewGroup(
-				huh.NewInput().Title("Access Token").Value(&accessToken).Password(true).
-					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" {
-							return fmt.Errorf("required")
-						}
-						return nil
-					}),
-			),
-		)
+		// pick provider
+		var provider string
+		form := huh.NewForm(huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Provider").
+				Options(
+					huh.NewOption("Beeper", "beeper"),
+				).
+				Value(&provider),
+		))
 		if err := form.Run(); err != nil {
 			return err
 		}
 
-		creds := &messages.BeeperCredentials{
-			AccessToken: strings.TrimSpace(accessToken),
-		}
-		if err := provider.SaveCredentials(creds); err != nil {
+		// pick permissions
+		var read, write bool
+		form = huh.NewForm(huh.NewGroup(
+			huh.NewConfirm().Title("Enable read (sync & query)?").Value(&read),
+			huh.NewConfirm().Title("Enable write (send messages)?").Value(&write),
+		))
+		if err := form.Run(); err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stderr, "Beeper credentials saved. Run 'messages sync' to sync.")
+
+		acctDir := cfg.AccountDir(name)
+		if err := os.MkdirAll(acctDir, 0755); err != nil {
+			return err
+		}
+
+		// provider-specific credential setup
+		switch provider {
+		case "beeper":
+			var accessToken string
+			form = huh.NewForm(
+				huh.NewGroup(
+					huh.NewNote().
+						Title("Beeper Setup").
+						Description("Enter your Beeper access token.\nYou can find this in Beeper Desktop settings."),
+				),
+				huh.NewGroup(
+					huh.NewInput().Title("Access Token").Value(&accessToken).Password(true).
+						Validate(func(s string) error {
+							if strings.TrimSpace(s) == "" {
+								return fmt.Errorf("required")
+							}
+							return nil
+						}),
+				),
+			)
+			if err := form.Run(); err != nil {
+				return err
+			}
+			p, err := messages.NewBeeperProvider(acctDir)
+			if err != nil {
+				return err
+			}
+			if err := p.SaveCredentials(&messages.BeeperCredentials{
+				AccessToken: strings.TrimSpace(accessToken),
+			}); err != nil {
+				return err
+			}
+		}
+
+		cfg.Accounts[name] = messages.AccountConfig{
+			Provider: provider,
+			Read:     read,
+			Write:    write,
+		}
+		if cfg.Default == "" {
+			cfg.Default = name
+		}
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Account %q added (provider: %s, read: %v, write: %v)\n", name, provider, read, write)
+		if cfg.Default == name {
+			fmt.Fprintf(os.Stderr, "Set as default account.\n")
+		}
 		return nil
 	},
 }
 
-var syncCmd = &bonzai.Cmd{
-	Name:  "sync",
-	Short: "sync messages from beeper",
-	Do: func(x *bonzai.Cmd, args ...string) error {
-		mm, err := getManager()
+var accountListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "list all accounts",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg := messages.NewConfig()
+		if err := cfg.Load(); err != nil {
+			return err
+		}
+		if len(cfg.Accounts) == 0 {
+			fmt.Fprintln(os.Stderr, "No accounts configured. Run 'messages account add' to add one.")
+			return nil
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "NAME\tPROVIDER\tREAD\tWRITE\tDEFAULT")
+		for name, acct := range cfg.Accounts {
+			def := ""
+			if name == cfg.Default {
+				def = "*"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%v\t%v\t%s\n", name, acct.Provider, acct.Read, acct.Write, def)
+		}
+		w.Flush()
+		return nil
+	},
+}
+
+var accountRemoveCmd = &cobra.Command{
+	Use:   "remove <name>",
+	Short: "remove an account",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		cfg := messages.NewConfig()
+		if err := cfg.Load(); err != nil {
+			return err
+		}
+		if _, ok := cfg.Accounts[name]; !ok {
+			return fmt.Errorf("account %q not found", name)
+		}
+
+		var confirm bool
+		form := huh.NewForm(huh.NewGroup(
+			huh.NewConfirm().
+				Title(fmt.Sprintf("Remove account %q?", name)).
+				Description("This will delete the account config and credentials.").
+				Value(&confirm),
+		))
+		if err := form.Run(); err != nil {
+			return err
+		}
+		if !confirm {
+			return nil
+		}
+
+		delete(cfg.Accounts, name)
+		if cfg.Default == name {
+			cfg.Default = ""
+			// pick a new default if there are remaining accounts
+			for n := range cfg.Accounts {
+				cfg.Default = n
+				break
+			}
+		}
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+		// remove credentials directory
+		os.RemoveAll(cfg.AccountDir(name))
+		fmt.Fprintf(os.Stderr, "Account %q removed.\n", name)
+		return nil
+	},
+}
+
+var accountDefaultCmd = &cobra.Command{
+	Use:   "default <name>",
+	Short: "set the default account",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		cfg := messages.NewConfig()
+		if err := cfg.Load(); err != nil {
+			return err
+		}
+		if _, ok := cfg.Accounts[name]; !ok {
+			return fmt.Errorf("account %q not found", name)
+		}
+		cfg.Default = name
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Default account set to %q.\n", name)
+		return nil
+	},
+}
+
+// --- messaging commands ---
+
+var syncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "sync messages",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mm, err := getManager(accountFlag)
 		if err != nil {
 			return err
 		}
@@ -108,17 +245,12 @@ var syncCmd = &bonzai.Cmd{
 	},
 }
 
-var listCmd = &bonzai.Cmd{
-	Name:  "list",
-	Short: "list all conversations (-o table|json)",
-	Usage: "[-o format]",
-	Opts:  "table|json",
-	Do: func(x *bonzai.Cmd, args ...string) error {
-		format, _, err := parseOutputFlag(args)
-		if err != nil {
-			return err
-		}
-		mm, err := getManager()
+var listCmd = &cobra.Command{
+	Use:   "list",
+	Short: "list all conversations",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		format, _ := cmd.Flags().GetString("output")
+		mm, err := getManager(accountFlag)
 		if err != nil {
 			return err
 		}
@@ -134,7 +266,7 @@ var listCmd = &bonzai.Cmd{
 				return err
 			}
 			fmt.Println(string(data))
-		default: // table
+		default:
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "ID\tTITLE\tPLATFORM\tPARTICIPANTS\tUNREAD\tLAST ACTIVITY")
 			for _, c := range convs {
@@ -150,32 +282,25 @@ var listCmd = &bonzai.Cmd{
 	},
 }
 
-var getCmd = &bonzai.Cmd{
-	Name:  "get",
-	Short: "get messages for a conversation (-o table|json)",
-	Usage: "[-o format] <conversation-id>",
-	Opts:  "table|json",
-	Do: func(x *bonzai.Cmd, args ...string) error {
-		format, rest, err := parseOutputFlag(args)
-		if err != nil {
-			return err
-		}
-		if len(rest) != 1 {
-			return fmt.Errorf("expected 1 argument, got %d", len(rest))
-		}
-		mm, err := getManager()
+var getCmd = &cobra.Command{
+	Use:   "get <conversation-id>",
+	Short: "get messages for a conversation",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		format, _ := cmd.Flags().GetString("output")
+		mm, err := getManager(accountFlag)
 		if err != nil {
 			return err
 		}
 		defer mm.Close()
-		conv, err := mm.GetConversation(rest[0])
+		conv, err := mm.GetConversation(args[0])
 		if err != nil {
 			return err
 		}
 		if conv == nil {
-			return fmt.Errorf("conversation not found: %s", rest[0])
+			return fmt.Errorf("conversation not found: %s", args[0])
 		}
-		msgs, err := mm.GetMessagesForConversation(rest[0])
+		msgs, err := mm.GetMessagesForConversation(args[0])
 		if err != nil {
 			return err
 		}
@@ -193,7 +318,7 @@ var getCmd = &bonzai.Cmd{
 				return err
 			}
 			fmt.Println(string(data))
-		default: // table
+		default:
 			fmt.Fprintf(os.Stderr, "Conversation: %s (%s, %s)\n\n", conv.Title, conv.Platform, conv.ID)
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "TIMESTAMP\tSENDER\tMESSAGE")
@@ -215,15 +340,12 @@ var getCmd = &bonzai.Cmd{
 	},
 }
 
-var searchCmd = &bonzai.Cmd{
-	Name:  "search",
+var searchCmd = &cobra.Command{
+	Use:   "search <contact-uid>",
 	Short: "get messages for a contact UID",
-	Usage: "<contact-uid>",
-	Do: func(x *bonzai.Cmd, args ...string) error {
-		if len(args) != 1 {
-			return fmt.Errorf("expected 1 argument, got %d", len(args))
-		}
-		mm, err := getManager()
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mm, err := getManager(accountFlag)
 		if err != nil {
 			return err
 		}
@@ -241,41 +363,67 @@ var searchCmd = &bonzai.Cmd{
 	},
 }
 
-func parseOutputFlag(args []string) (string, []string, error) {
-	format := "table"
-	var rest []string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "-o" {
-			if i+1 >= len(args) {
-				return "", nil, fmt.Errorf("-o requires a format: table or json")
-			}
-			format = strings.ToLower(args[i+1])
-			if format != "table" && format != "json" {
-				return "", nil, fmt.Errorf("unknown output format %q: use table or json", format)
-			}
-			i++
-		} else {
-			rest = append(rest, args[i])
+var sendCmd = &cobra.Command{
+	Use:   "send <conversation-id> <message>",
+	Short: "send a message to a conversation",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mm, err := getManager(accountFlag)
+		if err != nil {
+			return err
 		}
-	}
-	return format, rest, nil
+		defer mm.Close()
+		if err := mm.Send(context.Background(), args[0], args[1]); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "Message sent.")
+		return nil
+	},
 }
 
-func getManager() (*messages.MessageManager, error) {
+// --- helpers ---
+
+func getManager(accountName string) (*messages.MessageManager, error) {
 	cfg := messages.NewConfig()
-	if err := cfg.EnsureDir(); err != nil {
+	if err := cfg.Load(); err != nil {
 		return nil, err
 	}
-	provider, err := messages.NewBeeperProvider(cfg.Dir)
+	name, acct, err := cfg.GetAccount(accountName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w. Run 'messages account add' first", err)
 	}
+	acctDir := cfg.AccountDir(name)
+
+	var provider messages.MessageProvider
+	switch acct.Provider {
+	case "beeper":
+		p, err := messages.NewBeeperProvider(acctDir)
+		if err != nil {
+			return nil, err
+		}
+		provider = p
+	default:
+		return nil, fmt.Errorf("unknown provider %q", acct.Provider)
+	}
+
 	if err := provider.Initialize(); err != nil {
-		return nil, fmt.Errorf("%w. Run 'messages init' first", err)
+		return nil, fmt.Errorf("%w. Run 'messages account add %s' to set up credentials", err, name)
 	}
-	return messages.NewMessageManager(provider, cfg.Dir)
+	return messages.NewMessageManager(provider, acct, cfg.Dir)
+}
+
+func init() {
+	rootCmd.PersistentFlags().StringVarP(&accountFlag, "account", "a", "", "account to use (default: from config)")
+
+	listCmd.Flags().StringP("output", "o", "table", "output format: table or json")
+	getCmd.Flags().StringP("output", "o", "table", "output format: table or json")
+
+	accountCmd.AddCommand(accountAddCmd, accountListCmd, accountRemoveCmd, accountDefaultCmd)
+	rootCmd.AddCommand(accountCmd, syncCmd, listCmd, getCmd, searchCmd, sendCmd)
 }
 
 func main() {
-	Cmd.Exec()
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
 }
