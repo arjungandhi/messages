@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/arjungandhi/messages"
+	"github.com/arjungandhi/messages/internal/messages"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 )
