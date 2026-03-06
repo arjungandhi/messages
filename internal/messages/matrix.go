@@ -20,6 +20,7 @@ type MatrixCredentials struct {
 	HomeserverURL string `json:"homeserver_url"`
 	UserID        string `json:"user_id"`
 	AccessToken   string `json:"access_token"`
+	DeviceID      string `json:"device_id,omitempty"`
 }
 
 type MatrixProvider struct {
@@ -76,6 +77,9 @@ func (p *MatrixProvider) Initialize() error {
 	client, err := mautrix.NewClient(creds.HomeserverURL, p.userID, creds.AccessToken)
 	if err != nil {
 		return fmt.Errorf("failed to create Matrix client: %w", err)
+	}
+	if creds.DeviceID != "" {
+		client.DeviceID = id.DeviceID(creds.DeviceID)
 	}
 	p.client = client
 
