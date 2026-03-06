@@ -244,7 +244,9 @@ var sendCmd = &cobra.Command{
 
 		// Args mode: messages send <room-id> <message>
 		if len(args) >= 2 {
-			roomID := args[0]
+			// Bash escapes '!' to '\!' — strip backslashes since they're
+			// never valid in Matrix room IDs (!opaque_id:domain).
+			roomID := strings.ReplaceAll(args[0], `\`, "")
 			text := strings.Join(args[1:], " ")
 			if err := provider.Send(ctx, roomID, text); err != nil {
 				return err
