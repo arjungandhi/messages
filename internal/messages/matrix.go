@@ -150,7 +150,21 @@ func (p *MatrixProvider) Close() error {
 }
 
 func (p *MatrixProvider) Send(ctx context.Context, roomID string, text string) error {
-	_, err := p.client.SendText(ctx, id.RoomID(roomID), text)
+	// Do an initial sync so the crypto helper learns room encryption state
+	// and other users' device keys — required for encrypting outgoing messages.
+	resp, err := p.client.SyncRequest(ctx, 0, "", "", true, event.PresenceOffline)
+	if err != nil {
+		return fmt.Errorf("initial sync failed: %w", err)
+	}
+	syncer := p.client.Syncer.(*mautrix.DefaultSyncer)
+	if err := syncer.ProcessResponse(ctx, resp, ""); err != nil {
+		return fmt.Errorf("failed to process sync response: %w", err)
+	}
+	if err := p.client.Store.SaveNextBatch(ctx, p.userID, resp.NextBatch); err != nil {
+		return fmt.Errorf("failed to save sync token: %w", err)
+	}
+
+	_, err = p.client.SendText(ctx, id.RoomID(roomID), text)
 	return err
 }
 
