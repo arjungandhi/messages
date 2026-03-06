@@ -160,9 +160,8 @@ func (p *MatrixProvider) Send(ctx context.Context, roomID string, text string) e
 	if err := syncer.ProcessResponse(ctx, resp, ""); err != nil {
 		return fmt.Errorf("failed to process sync response: %w", err)
 	}
-	if err := p.client.Store.SaveNextBatch(ctx, p.userID, resp.NextBatch); err != nil {
-		return fmt.Errorf("failed to save sync token: %w", err)
-	}
+	// Best-effort save of sync token; may fail for read-only stores.
+	_ = p.client.Store.SaveNextBatch(ctx, p.userID, resp.NextBatch)
 
 	_, err = p.client.SendText(ctx, id.RoomID(roomID), text)
 	return err
