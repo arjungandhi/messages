@@ -22,7 +22,7 @@
           pname = "messages";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-pskQHKrmMfNj6lc/Np5kkpUs0h3OgFSVHDsfpJ53MN0=";
+          vendorHash = "sha256-shPXN/9d5BIZXfIXw1YwxIA4QkqFsWTJNBQRdW6t0Mo=";
           subPackages = [ "cmd/messages" ];
 
           meta = with pkgs.lib; {

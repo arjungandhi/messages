@@ -5,13 +5,16 @@ set -euo pipefail
 if git diff --cached --name-only | grep -qE '^go\.(mod|sum)$'; then
     echo "go.mod/go.sum changed — updating vendorHash in flake.nix..."
 
-    tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' EXIT
+    # Set a fake hash to trigger a mismatch and discover the real one
+    sed -i 's|vendorHash = ".*";|vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";|' flake.nix
 
-    cp go.mod go.sum "$tmpdir/"
-    (cd "$tmpdir" && go mod vendor 2>/dev/null)
+    hash=$(nix build .#packages.x86_64-linux.default 2>&1 | grep "got:" | awk '{print $2}')
 
-    hash=$(nix hash path "$tmpdir/vendor")
+    if [ -z "$hash" ]; then
+        echo "ERROR: Could not determine vendorHash, restoring flake.nix"
+        git checkout flake.nix
+        exit 1
+    fi
 
     sed -i "s|vendorHash = \".*\";|vendorHash = \"$hash\";|" flake.nix
     git add flake.nix
