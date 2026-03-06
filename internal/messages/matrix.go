@@ -131,15 +131,9 @@ func (p *MatrixProvider) Listen(ctx context.Context, w io.Writer) error {
 		}
 	}
 
+	// The crypto helper (client.Crypto) automatically decrypts encrypted
+	// events and re-dispatches them as EventMessage, so we only need this handler.
 	syncer.OnEventType(event.EventMessage, handleMessage)
-	syncer.OnEventType(event.EventEncrypted, func(ctx context.Context, evt *event.Event) {
-		decrypted, err := p.cryptoHelper.Decrypt(ctx, evt)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to decrypt message: %v\n", err)
-			return
-		}
-		handleMessage(ctx, decrypted)
-	})
 
 	p.client.SyncPresence = event.PresenceOffline
 
