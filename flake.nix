@@ -22,11 +22,12 @@
           pname = "messages";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-shPXN/9d5BIZXfIXw1YwxIA4QkqFsWTJNBQRdW6t0Mo=";
+          vendorHash = "sha256-1cBPDVfJNKApZwcUuIzgEc3KbgX09dNDeU1EHLFo61c=";
           subPackages = [ "cmd/messages" ];
+          tags = [ "goolm" ];
 
           meta = with pkgs.lib; {
-            description = "Unix-style Matrix bot: listen | handler | send";
+            description = "Unix-style Matrix bot";
             homepage = "https://github.com/arjungandhi/messages";
             license = licenses.mit;
             mainProgram = "messages";

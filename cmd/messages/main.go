@@ -20,7 +20,7 @@ var accountFlag string
 
 var rootCmd = &cobra.Command{
 	Use:   "messages",
-	Short: "unix-style matrix bot: small tools that chain via pipes",
+	Short: "unix-style matrix bot",
 }
 
 // --- account commands ---

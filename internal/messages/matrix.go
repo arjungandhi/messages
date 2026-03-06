@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"time"
 
+	_ "go.mau.fi/util/dbutil/litestream"
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto/cryptohelper"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -21,9 +23,10 @@ type MatrixCredentials struct {
 }
 
 type MatrixProvider struct {
-	client *mautrix.Client
-	userID id.UserID
-	dir    string
+	client       *mautrix.Client
+	cryptoHelper *cryptohelper.CryptoHelper
+	userID       id.UserID
+	dir          string
 }
 
 func NewMatrixProvider(dir string) (*MatrixProvider, error) {
@@ -75,18 +78,31 @@ func (p *MatrixProvider) Initialize() error {
 		return fmt.Errorf("failed to create Matrix client: %w", err)
 	}
 	p.client = client
+
+	// Set up E2EE using a SQLite database for key storage
+	dbPath := filepath.Join(p.dir, "crypto.db")
+	helper, err := cryptohelper.NewCryptoHelper(client, []byte("messages"), dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to create crypto helper: %w", err)
+	}
+	if err := helper.Init(context.Background()); err != nil {
+		return fmt.Errorf("failed to init crypto helper: %w", err)
+	}
+	p.cryptoHelper = helper
+	client.Crypto = helper
+
 	return nil
 }
 
 // Listen uses the Matrix sync loop to long-poll for incoming messages.
 // Each message event (excluding our own) is written as a JSON line to w.
+// Handles both plaintext and encrypted messages.
 // Blocks until ctx is cancelled.
 func (p *MatrixProvider) Listen(ctx context.Context, w io.Writer) error {
 	syncer := p.client.Syncer.(*mautrix.DefaultSyncer)
 	enc := json.NewEncoder(w)
 
-	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
-		// Skip our own messages
+	handleMessage := func(ctx context.Context, evt *event.Event) {
 		if evt.Sender == p.userID {
 			return
 		}
@@ -109,12 +125,30 @@ func (p *MatrixProvider) Listen(ctx context.Context, w io.Writer) error {
 		if err := enc.Encode(msg); err != nil {
 			fmt.Fprintf(os.Stderr, "error writing message: %v\n", err)
 		}
+	}
+
+	syncer.OnEventType(event.EventMessage, handleMessage)
+	syncer.OnEventType(event.EventEncrypted, func(ctx context.Context, evt *event.Event) {
+		decrypted, err := p.cryptoHelper.Decrypt(ctx, evt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to decrypt message: %v\n", err)
+			return
+		}
+		handleMessage(ctx, decrypted)
 	})
 
 	p.client.SyncPresence = event.PresenceOffline
 
 	fmt.Fprintln(os.Stderr, "Listening for messages...")
+	defer p.Close()
 	return p.client.SyncWithContext(ctx)
+}
+
+func (p *MatrixProvider) Close() error {
+	if p.cryptoHelper != nil {
+		return p.cryptoHelper.Close()
+	}
+	return nil
 }
 
 func (p *MatrixProvider) Send(ctx context.Context, roomID string, text string) error {
