@@ -45,7 +45,7 @@ func TestConfig_LoadSave(t *testing.T) {
 		Dir:     dir,
 		Default: "test",
 		Accounts: map[string]AccountConfig{
-			"test": {Provider: "beeper", Read: true, Write: false},
+			"test": {Provider: "matrix"},
 		},
 	}
 	if err := cfg.Save(); err != nil {
@@ -63,14 +63,8 @@ func TestConfig_LoadSave(t *testing.T) {
 	if !ok {
 		t.Fatal("account 'test' not found")
 	}
-	if acct.Provider != "beeper" {
-		t.Errorf("provider: got %q, want %q", acct.Provider, "beeper")
-	}
-	if !acct.Read {
-		t.Error("read: got false, want true")
-	}
-	if acct.Write {
-		t.Error("write: got true, want false")
+	if acct.Provider != "matrix" {
+		t.Errorf("provider: got %q, want %q", acct.Provider, "matrix")
 	}
 }
 
@@ -88,8 +82,8 @@ func TestConfig_GetAccount(t *testing.T) {
 	cfg := &Config{
 		Default: "main",
 		Accounts: map[string]AccountConfig{
-			"main": {Provider: "beeper", Read: true, Write: true},
-			"bot":  {Provider: "matrix", Read: false, Write: true},
+			"main": {Provider: "matrix"},
+			"bot":  {Provider: "matrix"},
 		},
 	}
 
@@ -107,8 +101,8 @@ func TestConfig_GetAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name != "main" || acct.Provider != "beeper" {
-		t.Errorf("got %s/%s, want main/beeper", name, acct.Provider)
+	if name != "main" || acct.Provider != "matrix" {
+		t.Errorf("got %s/%s, want main/matrix", name, acct.Provider)
 	}
 
 	// missing account
@@ -121,7 +115,7 @@ func TestConfig_GetAccount(t *testing.T) {
 func TestConfig_GetAccount_NoDefault(t *testing.T) {
 	cfg := &Config{
 		Accounts: map[string]AccountConfig{
-			"main": {Provider: "beeper"},
+			"main": {Provider: "matrix"},
 		},
 	}
 	_, _, err := cfg.GetAccount("")
@@ -135,8 +129,8 @@ func TestConfig_Validate(t *testing.T) {
 	cfg := &Config{
 		Default: "a",
 		Accounts: map[string]AccountConfig{
-			"a": {Provider: "beeper"},
-			"b": {Provider: "beeper"},
+			"a": {Provider: "matrix"},
+			"b": {Provider: "matrix"},
 		},
 	}
 	if err := cfg.Validate(); err != nil {

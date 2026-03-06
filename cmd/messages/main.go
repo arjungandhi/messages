@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 
 	"github.com/arjungandhi/messages/internal/messages"
@@ -17,7 +20,7 @@ var accountFlag string
 
 var rootCmd = &cobra.Command{
 	Use:   "messages",
-	Short: "manage your messages",
+	Short: "unix-style matrix bot: small tools that chain via pipes",
 }
 
 // --- account commands ---
@@ -29,7 +32,7 @@ var accountCmd = &cobra.Command{
 
 var accountAddCmd = &cobra.Command{
 	Use:   "add <name>",
-	Short: "add a new account",
+	Short: "add a new matrix account",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -45,27 +48,39 @@ var accountAddCmd = &cobra.Command{
 			return fmt.Errorf("account %q already exists", name)
 		}
 
-		// pick provider
-		var provider string
-		form := huh.NewForm(huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Provider").
-				Options(
-					huh.NewOption("Beeper", "beeper"),
-					huh.NewOption("Matrix", "matrix"),
-				).
-				Value(&provider),
-		))
-		if err := form.Run(); err != nil {
-			return err
-		}
-
-		// pick permissions
-		var read, write bool
-		form = huh.NewForm(huh.NewGroup(
-			huh.NewConfirm().Title("Enable read (sync & query)?").Value(&read),
-			huh.NewConfirm().Title("Enable write (send messages)?").Value(&write),
-		))
+		var homeserverURL, userID, accessToken string
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewNote().
+					Title("Matrix Setup").
+					Description("Enter your Matrix homeserver details and access token."),
+			),
+			huh.NewGroup(
+				huh.NewInput().Title("Homeserver URL").Value(&homeserverURL).
+					Placeholder("https://matrix.example.com").
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("required")
+						}
+						return nil
+					}),
+				huh.NewInput().Title("User ID").Value(&userID).
+					Placeholder("@user:example.com").
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("required")
+						}
+						return nil
+					}),
+				huh.NewInput().Title("Access Token").Value(&accessToken).Password(true).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("required")
+						}
+						return nil
+					}),
+			),
+		)
 		if err := form.Run(); err != nil {
 			return err
 		}
@@ -75,92 +90,20 @@ var accountAddCmd = &cobra.Command{
 			return err
 		}
 
-		// provider-specific credential setup
-		switch provider {
-		case "beeper":
-			var accessToken string
-			form = huh.NewForm(
-				huh.NewGroup(
-					huh.NewNote().
-						Title("Beeper Setup").
-						Description("Enter your Beeper access token.\nYou can find this in Beeper Desktop settings."),
-				),
-				huh.NewGroup(
-					huh.NewInput().Title("Access Token").Value(&accessToken).Password(true).
-						Validate(func(s string) error {
-							if strings.TrimSpace(s) == "" {
-								return fmt.Errorf("required")
-							}
-							return nil
-						}),
-				),
-			)
-			if err := form.Run(); err != nil {
-				return err
-			}
-			p, err := messages.NewBeeperProvider(acctDir)
-			if err != nil {
-				return err
-			}
-			if err := p.SaveCredentials(&messages.BeeperCredentials{
-				AccessToken: strings.TrimSpace(accessToken),
-			}); err != nil {
-				return err
-			}
-		case "matrix":
-			var homeserverURL, userID, accessToken string
-			form = huh.NewForm(
-				huh.NewGroup(
-					huh.NewNote().
-						Title("Matrix Setup").
-						Description("Enter your Matrix homeserver details and access token."),
-				),
-				huh.NewGroup(
-					huh.NewInput().Title("Homeserver URL").Value(&homeserverURL).
-						Placeholder("https://matrix.example.com").
-						Validate(func(s string) error {
-							if strings.TrimSpace(s) == "" {
-								return fmt.Errorf("required")
-							}
-							return nil
-						}),
-					huh.NewInput().Title("User ID").Value(&userID).
-						Placeholder("@user:example.com").
-						Validate(func(s string) error {
-							if strings.TrimSpace(s) == "" {
-								return fmt.Errorf("required")
-							}
-							return nil
-						}),
-					huh.NewInput().Title("Access Token").Value(&accessToken).Password(true).
-						Validate(func(s string) error {
-							if strings.TrimSpace(s) == "" {
-								return fmt.Errorf("required")
-							}
-							return nil
-						}),
-				),
-			)
-			if err := form.Run(); err != nil {
-				return err
-			}
-			p, err := messages.NewMatrixProvider(acctDir)
-			if err != nil {
-				return err
-			}
-			if err := p.SaveCredentials(&messages.MatrixCredentials{
-				HomeserverURL: strings.TrimSpace(homeserverURL),
-				UserID:        strings.TrimSpace(userID),
-				AccessToken:   strings.TrimSpace(accessToken),
-			}); err != nil {
-				return err
-			}
+		p, err := messages.NewMatrixProvider(acctDir)
+		if err != nil {
+			return err
+		}
+		if err := p.SaveCredentials(&messages.MatrixCredentials{
+			HomeserverURL: strings.TrimSpace(homeserverURL),
+			UserID:        strings.TrimSpace(userID),
+			AccessToken:   strings.TrimSpace(accessToken),
+		}); err != nil {
+			return err
 		}
 
 		cfg.Accounts[name] = messages.AccountConfig{
-			Provider: provider,
-			Read:     read,
-			Write:    write,
+			Provider: "matrix",
 		}
 		if cfg.Default == "" {
 			cfg.Default = name
@@ -168,7 +111,7 @@ var accountAddCmd = &cobra.Command{
 		if err := cfg.Save(); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "Account %q added (provider: %s, read: %v, write: %v)\n", name, provider, read, write)
+		fmt.Fprintf(os.Stderr, "Account %q added.\n", name)
 		if cfg.Default == name {
 			fmt.Fprintf(os.Stderr, "Set as default account.\n")
 		}
@@ -189,13 +132,13 @@ var accountListCmd = &cobra.Command{
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tPROVIDER\tREAD\tWRITE\tDEFAULT")
+		fmt.Fprintln(w, "NAME\tPROVIDER\tDEFAULT")
 		for name, acct := range cfg.Accounts {
 			def := ""
 			if name == cfg.Default {
 				def = "*"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%v\t%v\t%s\n", name, acct.Provider, acct.Read, acct.Write, def)
+			fmt.Fprintf(w, "%s\t%s\t%s\n", name, acct.Provider, def)
 		}
 		w.Flush()
 		return nil
@@ -233,7 +176,6 @@ var accountRemoveCmd = &cobra.Command{
 		delete(cfg.Accounts, name)
 		if cfg.Default == name {
 			cfg.Default = ""
-			// pick a new default if there are remaining accounts
 			for n := range cfg.Accounts {
 				cfg.Default = n
 				break
@@ -242,7 +184,6 @@ var accountRemoveCmd = &cobra.Command{
 		if err := cfg.Save(); err != nil {
 			return err
 		}
-		// remove credentials directory
 		os.RemoveAll(cfg.AccountDir(name))
 		fmt.Fprintf(os.Stderr, "Account %q removed.\n", name)
 		return nil
@@ -271,168 +212,75 @@ var accountDefaultCmd = &cobra.Command{
 	},
 }
 
-// --- messaging commands ---
+// --- listen command ---
 
-var syncCmd = &cobra.Command{
-	Use:   "sync",
-	Short: "sync messages",
+var listenCmd = &cobra.Command{
+	Use:   "listen",
+	Short: "listen for messages, output JSON lines to stdout",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		mm, err := getManager(accountFlag)
+		provider, err := getProvider(accountFlag)
 		if err != nil {
 			return err
 		}
-		defer mm.Close()
-		if err := mm.Sync(); err != nil {
-			return err
-		}
-		convs, err := mm.ListAllConversations()
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "Sync complete. %d conversations.\n", len(convs))
-		return nil
+
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+
+		return provider.Listen(ctx, os.Stdout)
 	},
 }
 
-var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "list all conversations",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		format, _ := cmd.Flags().GetString("output")
-		mm, err := getManager(accountFlag)
-		if err != nil {
-			return err
-		}
-		defer mm.Close()
-		convs, err := mm.ListAllConversations()
-		if err != nil {
-			return err
-		}
-		switch format {
-		case "json":
-			data, err := json.MarshalIndent(convs, "", "  ")
-			if err != nil {
-				return err
-			}
-			fmt.Println(string(data))
-		default:
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tTITLE\tPLATFORM\tPARTICIPANTS\tUNREAD\tLAST ACTIVITY")
-			for _, c := range convs {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n",
-					c.ID, c.Title, c.Platform,
-					c.ParticipantCount, c.UnreadCount,
-					c.LastActivity.Format("2006-01-02T15:04:05Z"),
-				)
-			}
-			w.Flush()
-		}
-		return nil
-	},
-}
-
-var getCmd = &cobra.Command{
-	Use:   "get <conversation-id>",
-	Short: "get messages for a conversation",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		format, _ := cmd.Flags().GetString("output")
-		mm, err := getManager(accountFlag)
-		if err != nil {
-			return err
-		}
-		defer mm.Close()
-		conv, err := mm.GetConversation(args[0])
-		if err != nil {
-			return err
-		}
-		if conv == nil {
-			return fmt.Errorf("conversation not found: %s", args[0])
-		}
-		msgs, err := mm.GetMessagesForConversation(args[0])
-		if err != nil {
-			return err
-		}
-		switch format {
-		case "json":
-			result := struct {
-				Conversation messages.Conversation `json:"conversation"`
-				Messages     []messages.Message    `json:"messages"`
-			}{
-				Conversation: *conv,
-				Messages:     msgs,
-			}
-			data, err := json.MarshalIndent(result, "", "  ")
-			if err != nil {
-				return err
-			}
-			fmt.Println(string(data))
-		default:
-			fmt.Fprintf(os.Stderr, "Conversation: %s (%s, %s)\n\n", conv.Title, conv.Platform, conv.ID)
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "TIMESTAMP\tSENDER\tMESSAGE")
-			for _, m := range msgs {
-				text := m.Text
-				if len(text) > 80 {
-					text = text[:77] + "..."
-				}
-				text = strings.ReplaceAll(text, "\n", " ")
-				fmt.Fprintf(w, "%s\t%s\t%s\n",
-					m.Timestamp.Format("2006-01-02 15:04"),
-					m.SenderName,
-					text,
-				)
-			}
-			w.Flush()
-		}
-		return nil
-	},
-}
-
-var searchCmd = &cobra.Command{
-	Use:   "search <contact-uid>",
-	Short: "get messages for a contact UID",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		mm, err := getManager(accountFlag)
-		if err != nil {
-			return err
-		}
-		defer mm.Close()
-		msgs, err := mm.GetMessagesForContact(args[0])
-		if err != nil {
-			return err
-		}
-		data, err := json.MarshalIndent(msgs, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(data))
-		return nil
-	},
-}
+// --- send command ---
 
 var sendCmd = &cobra.Command{
-	Use:   "send <conversation-id> <message>",
-	Short: "send a message to a conversation",
-	Args:  cobra.ExactArgs(2),
+	Use:   "send [room-id] [message]",
+	Short: "send a message (via args or JSON lines on stdin)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		mm, err := getManager(accountFlag)
+		provider, err := getProvider(accountFlag)
 		if err != nil {
 			return err
 		}
-		defer mm.Close()
-		if err := mm.Send(context.Background(), args[0], args[1]); err != nil {
-			return err
+		ctx := context.Background()
+
+		// Args mode: messages send <room-id> <message>
+		if len(args) >= 2 {
+			roomID := args[0]
+			text := strings.Join(args[1:], " ")
+			if err := provider.Send(ctx, roomID, text); err != nil {
+				return err
+			}
+			fmt.Fprintln(os.Stderr, "Message sent.")
+			return nil
 		}
-		fmt.Fprintln(os.Stderr, "Message sent.")
-		return nil
+
+		// Stdin mode: read JSON lines
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var msg messages.OutgoingMessage
+			if err := json.Unmarshal([]byte(line), &msg); err != nil {
+				fmt.Fprintf(os.Stderr, "invalid JSON line: %v\n", err)
+				continue
+			}
+			if msg.RoomID == "" || msg.Text == "" {
+				fmt.Fprintln(os.Stderr, "skipping message: room_id and text are required")
+				continue
+			}
+			if err := provider.Send(ctx, msg.RoomID, msg.Text); err != nil {
+				fmt.Fprintf(os.Stderr, "send error: %v\n", err)
+				continue
+			}
+		}
+		return scanner.Err()
 	},
 }
 
 // --- helpers ---
 
-func getManager(accountName string) (*messages.MessageManager, error) {
+func getProvider(accountName string) (messages.Provider, error) {
 	cfg := messages.NewConfig()
 	if err := cfg.Load(); err != nil {
 		return nil, err
@@ -443,14 +291,8 @@ func getManager(accountName string) (*messages.MessageManager, error) {
 	}
 	acctDir := cfg.AccountDir(name)
 
-	var provider messages.MessageProvider
+	var provider messages.Provider
 	switch acct.Provider {
-	case "beeper":
-		p, err := messages.NewBeeperProvider(acctDir)
-		if err != nil {
-			return nil, err
-		}
-		provider = p
 	case "matrix":
 		p, err := messages.NewMatrixProvider(acctDir)
 		if err != nil {
@@ -464,17 +306,14 @@ func getManager(accountName string) (*messages.MessageManager, error) {
 	if err := provider.Initialize(); err != nil {
 		return nil, fmt.Errorf("%w. Run 'messages account add %s' to set up credentials", err, name)
 	}
-	return messages.NewMessageManager(provider, acct, cfg.Dir)
+	return provider, nil
 }
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&accountFlag, "account", "a", "", "account to use (default: from config)")
 
-	listCmd.Flags().StringP("output", "o", "table", "output format: table or json")
-	getCmd.Flags().StringP("output", "o", "table", "output format: table or json")
-
 	accountCmd.AddCommand(accountAddCmd, accountListCmd, accountRemoveCmd, accountDefaultCmd)
-	rootCmd.AddCommand(accountCmd, syncCmd, listCmd, getCmd, searchCmd, sendCmd)
+	rootCmd.AddCommand(accountCmd, listenCmd, sendCmd)
 }
 
 func main() {

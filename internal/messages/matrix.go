@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -77,151 +78,62 @@ func (p *MatrixProvider) Initialize() error {
 	return nil
 }
 
-func (p *MatrixProvider) Sync() ([]Conversation, []Message, error) {
-	ctx := context.Background()
-	var conversations []Conversation
-	var allMessages []Message
+// Listen uses the Matrix sync loop to long-poll for incoming messages.
+// Each message event (excluding our own) is written as a JSON line to w.
+// Blocks until ctx is cancelled.
+func (p *MatrixProvider) Listen(ctx context.Context, w io.Writer) error {
+	syncer := p.client.Syncer.(*mautrix.DefaultSyncer)
+	enc := json.NewEncoder(w)
 
-	fmt.Println("Fetching rooms from Matrix...")
-	joinedResp, err := p.client.JoinedRooms(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get joined rooms: %w", err)
-	}
-
-	for i, roomID := range joinedResp.JoinedRooms {
-		displayName := p.getRoomDisplayName(ctx, roomID)
-		fmt.Printf("\r\033[K[%d/%d] Syncing: %s", i+1, len(joinedResp.JoinedRooms), truncateString(displayName, 50))
-
-		// Get members
-		membersResp, err := p.client.JoinedMembers(ctx, roomID)
-		if err != nil {
-			fmt.Printf("\n  Warning: failed to get members for %s: %v\n", roomID, err)
-			continue
+	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
+		// Skip our own messages
+		if evt.Sender == p.userID {
+			return
 		}
 
-		participantUIDs := make([]string, 0, len(membersResp.Joined))
-		memberNames := make(map[id.UserID]string, len(membersResp.Joined))
-		for uid, member := range membersResp.Joined {
-			participantUIDs = append(participantUIDs, string(uid))
-			if member.DisplayName != "" {
-				memberNames[uid] = member.DisplayName
-			} else {
-				memberNames[uid] = string(uid)
-			}
+		content := evt.Content.AsMessage()
+		if content == nil {
+			return
 		}
 
-		roomType := "group"
-		if len(membersResp.Joined) <= 2 {
-			roomType = "single"
+		msg := IncomingMessage{
+			RoomID:     string(evt.RoomID),
+			RoomName:   p.getRoomDisplayName(ctx, evt.RoomID),
+			Sender:     string(evt.Sender),
+			SenderName: string(evt.Sender),
+			Text:       content.Body,
+			Timestamp:  time.UnixMilli(evt.Timestamp).UTC().Format(time.RFC3339),
+			EventID:    string(evt.ID),
 		}
 
-		conv := Conversation{
-			ID:               string(roomID),
-			Platform:         "matrix",
-			Title:            displayName,
-			Type:             roomType,
-			ParticipantUIDs:  participantUIDs,
-			ParticipantCount: len(membersResp.Joined),
+		if err := enc.Encode(msg); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing message: %v\n", err)
 		}
-		conversations = append(conversations, conv)
+	})
 
-		// Get messages
-		var from string
-		chatMessageCount := 0
-		for {
-			resp, err := p.client.Messages(ctx, roomID, from, "", mautrix.DirectionBackward, nil, 100)
-			if err != nil {
-				fmt.Printf("\n  Warning: failed to get messages for %s: %v\n", roomID, err)
-				break
-			}
-			if len(resp.Chunk) == 0 {
-				break
-			}
-			for _, evt := range resp.Chunk {
-				if evt.Type != event.EventMessage {
-					continue
-				}
-				content := evt.Content.AsMessage()
-				if content == nil {
-					continue
-				}
+	p.client.SyncPresence = event.PresenceOffline
 
-				senderName := evt.Sender.String()
-				if name, ok := memberNames[evt.Sender]; ok {
-					senderName = name
-				}
-
-				m := Message{
-					ID:              evt.ID.String(),
-					ContactUID:      evt.Sender.String(),
-					Timestamp:       time.UnixMilli(evt.Timestamp),
-					SenderUID:       evt.Sender.String(),
-					SenderName:      senderName,
-					ConversationUID: string(roomID),
-					ChatTitle:       displayName,
-					Text:            content.Body,
-					Platform:        "matrix",
-					PlatformID:      evt.ID.String(),
-					IsSent:          evt.Sender == p.userID,
-					SortKey:         fmt.Sprintf("%d", evt.Timestamp),
-				}
-
-				// Handle media attachments
-				if content.MsgType != event.MsgText && content.MsgType != event.MsgNotice && content.MsgType != event.MsgEmote {
-					att := Attachment{
-						Type:     string(content.MsgType),
-						SrcURL:   string(content.URL),
-						FileName: content.Body,
-					}
-					if content.Info != nil {
-						att.MimeType = content.Info.MimeType
-						att.FileSize = float64(content.Info.Size)
-						att.Width = content.Info.Width
-						att.Height = content.Info.Height
-						att.Duration = float64(content.Info.Duration) / 1000.0
-					}
-					m.Attachments = []Attachment{att}
-				}
-
-				allMessages = append(allMessages, m)
-				chatMessageCount++
-			}
-
-			if chatMessageCount%10 == 0 {
-				fmt.Printf("\r\033[K[%d/%d] Syncing: %s - %d messages", i+1, len(joinedResp.JoinedRooms), truncateString(displayName, 50), chatMessageCount)
-			}
-
-			from = resp.End
-			if from == "" {
-				break
-			}
-		}
-	}
-
-	fmt.Printf("\n\nSynced %d rooms with %d total messages\n", len(conversations), len(allMessages))
-	return conversations, allMessages, nil
+	fmt.Fprintln(os.Stderr, "Listening for messages...")
+	return p.client.SyncWithContext(ctx)
 }
 
-func (p *MatrixProvider) Send(ctx context.Context, chatID string, text string) error {
-	_, err := p.client.SendText(ctx, id.RoomID(chatID), text)
+func (p *MatrixProvider) Send(ctx context.Context, roomID string, text string) error {
+	_, err := p.client.SendText(ctx, id.RoomID(roomID), text)
 	return err
 }
 
 func (p *MatrixProvider) getRoomDisplayName(ctx context.Context, roomID id.RoomID) string {
-	// Try room name state event
 	var nameContent event.RoomNameEventContent
 	err := p.client.StateEvent(ctx, roomID, event.StateRoomName, "", &nameContent)
 	if err == nil && nameContent.Name != "" {
 		return nameContent.Name
 	}
 
-	// Try canonical alias
 	var aliasContent event.CanonicalAliasEventContent
 	err = p.client.StateEvent(ctx, roomID, event.StateCanonicalAlias, "", &aliasContent)
 	if err == nil && aliasContent.Alias != "" {
 		return string(aliasContent.Alias)
 	}
 
-	// Fall back to room ID
 	return string(roomID)
 }

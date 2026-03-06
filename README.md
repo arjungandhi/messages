@@ -1,30 +1,40 @@
-<!-- PROJECT LOGO -->
-<br />
-<div align="center">
-<h3 align="center">Messages</h3>
+# Messages
 
-  <p align="center">
-    a CLI for managing and querying your messages across providers
-  </p>
-</div>
+A Unix-style Matrix bot.
 
-# About
+```bash
+# Echo bot
+messages listen | my-echo-handler | messages send
 
-Messages is a CLI tool for syncing, querying, and sending messages across multiple messaging providers. It stores messages locally in SQLite for fast offline access.
+# AI chatbot
+messages listen | my-ai-handler | messages send
 
-Currently supported providers:
-- **Beeper** — sync via Beeper Desktop API
-- **Matrix** — connect directly to any Matrix homeserver via access token
+# Log all messages
+messages listen >> messages.log
 
-## Project Structure
-
+# Send a one-off message
+messages send '!room:server' 'hello'
 ```
-messages/
-├── cmd/messages/          # CLI entrypoint
-├── internal/messages/     # Core library (providers, config, db)
-├── go.mod
-└── README.md
+
+## How It Works
+
+Two commands connect Matrix to stdin/stdout:
+
+- **`messages listen`** — long-running, outputs JSON lines to stdout for each incoming message
+- **`messages send`** — reads JSON lines from stdin OR takes args, sends to Matrix
+
+Handlers are just programs that transform JSON lines. No plugin system needed.
+
+### Message Format
+
+`listen` outputs one JSON object per line:
+```json
+{"room_id":"!abc:matrix.org","room_name":"General","sender":"@user:matrix.org","sender_name":"@user:matrix.org","text":"hello","timestamp":"2026-03-05T10:00:00Z","event_id":"$xyz"}
 ```
+
+`send` accepts either:
+- **Args:** `messages send <room-id> <message>`
+- **Stdin (JSON lines):** `{"room_id":"!abc:matrix.org","text":"response"}`
 
 ## Install
 
@@ -32,28 +42,35 @@ messages/
 go install github.com/arjungandhi/messages/cmd/messages@latest
 ```
 
-## Usage
-
+Or with Nix:
 ```bash
-# Add an account
-messages account add myaccount
-
-# Sync messages
-messages sync -a myaccount
-
-# List conversations
-messages list
-
-# Get messages for a conversation
-messages get <conversation-id>
-
-# Send a message
-messages send <conversation-id> "hello"
+nix build github:arjungandhi/messages
 ```
 
-## Build
+## Setup
 
 ```bash
+# Add a Matrix account
+messages account add mybot
+
+# List accounts
+messages account list
+
+# Set default account
+messages account default mybot
+```
+
+## Development
+
+```bash
+# Build
 go build ./...
+
+# Test
 go test ./...
+
+# After cloning, enable git hooks:
+git config core.hooksPath .githooks
 ```
+
+The pre-commit hook automatically updates `vendorHash` in `flake.nix` when `go.mod`/`go.sum` change.

@@ -10,8 +10,6 @@ import (
 
 type AccountConfig struct {
 	Provider string `yaml:"provider"`
-	Read     bool   `yaml:"read"`
-	Write    bool   `yaml:"write"`
 }
 
 type Config struct {
@@ -96,9 +94,9 @@ func (c *Config) Validate() error {
 	}
 	for name, acct := range c.Accounts {
 		switch acct.Provider {
-		case "beeper", "matrix":
+		case "matrix":
 		default:
-			return fmt.Errorf("account %q: unknown provider %q (must be beeper or matrix)", name, acct.Provider)
+			return fmt.Errorf("account %q: unknown provider %q (must be matrix)", name, acct.Provider)
 		}
 	}
 	return nil
