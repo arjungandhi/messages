@@ -85,6 +85,17 @@ func (p *MatrixProvider) Listen(ctx context.Context, w io.Writer) error {
 	syncer := p.client.Syncer.(*mautrix.DefaultSyncer)
 	enc := json.NewEncoder(w)
 
+	syncer.OnEventType(event.StateMember, func(ctx context.Context, evt *event.Event) {
+		if id.UserID(evt.GetStateKey()) == p.userID && evt.Content.AsMember().Membership == event.MembershipInvite {
+			_, err := p.client.JoinRoomByID(ctx, evt.RoomID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to auto-join room %s: %v\n", evt.RoomID, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "auto-joined room %s\n", evt.RoomID)
+			}
+		}
+	})
+
 	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
 		// Skip our own messages
 		if evt.Sender == p.userID {
