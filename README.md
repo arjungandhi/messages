@@ -1,6 +1,6 @@
 # Messages
 
-A Unix-style Matrix bot.
+A Unix-style Matrix client.
 
 ```bash
 # Echo bot (using jq)

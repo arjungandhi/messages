@@ -23,7 +23,7 @@ var outputFlag string
 
 var rootCmd = &cobra.Command{
 	Use:   "messages",
-	Short: "unix-style matrix bot",
+	Short: "unix-style matrix client",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		level := slog.LevelWarn
 		if verboseFlag {

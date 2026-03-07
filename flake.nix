@@ -1,5 +1,5 @@
 {
-  description = "Unix-style Matrix bots";
+  description = "Unix-style Matrix client";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -27,7 +27,7 @@
           tags = [ "goolm" ];
 
           meta = with pkgs.lib; {
-            description = "Unix-style Matrix bot";
+            description = "Unix-style Matrix client";
             homepage = "https://github.com/arjungandhi/messages";
             license = licenses.mit;
             mainProgram = "messages";
