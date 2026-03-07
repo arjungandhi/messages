@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -17,10 +18,20 @@ import (
 )
 
 var accountFlag string
+var verboseFlag bool
 
 var rootCmd = &cobra.Command{
 	Use:   "messages",
 	Short: "unix-style matrix bot",
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		level := slog.LevelWarn
+		if verboseFlag {
+			level = slog.LevelDebug
+		}
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: level,
+		})))
+	},
 }
 
 // --- account commands ---
@@ -248,6 +259,7 @@ var sendCmd = &cobra.Command{
 			// never valid in Matrix room IDs (!opaque_id:domain).
 			roomID := strings.ReplaceAll(args[0], `\`, "")
 			text := strings.Join(args[1:], " ")
+			slog.Debug("sending message via args", "room_id", roomID, "text", text)
 			if err := provider.Send(ctx, roomID, text); err != nil {
 				return err
 			}
@@ -256,6 +268,7 @@ var sendCmd = &cobra.Command{
 		}
 
 		// Stdin mode: read JSON lines
+		slog.Debug("reading messages from stdin")
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -271,6 +284,7 @@ var sendCmd = &cobra.Command{
 				fmt.Fprintln(os.Stderr, "skipping message: room_id and text are required")
 				continue
 			}
+			slog.Debug("sending message via stdin", "room_id", msg.RoomID, "text", msg.Text)
 			if err := provider.Send(ctx, msg.RoomID, msg.Text); err != nil {
 				fmt.Fprintf(os.Stderr, "send error: %v\n", err)
 				continue
@@ -291,6 +305,7 @@ func getProvider(accountName string) (messages.Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w. Run 'messages account add' first", err)
 	}
+	slog.Debug("using account", "name", name, "provider", acct.Provider)
 	acctDir := cfg.AccountDir(name)
 
 	var provider messages.Provider
@@ -313,6 +328,7 @@ func getProvider(accountName string) (messages.Provider, error) {
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&accountFlag, "account", "a", "", "account to use (default: from config)")
+	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "enable debug logging")
 
 	accountCmd.AddCommand(accountAddCmd, accountListCmd, accountRemoveCmd, accountDefaultCmd)
 	rootCmd.AddCommand(accountCmd, listenCmd, sendCmd)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -74,17 +75,20 @@ func (p *MatrixProvider) Initialize() error {
 		return fmt.Errorf("no credentials found")
 	}
 	p.userID = id.UserID(creds.UserID)
+	slog.Debug("creating matrix client", "homeserver", creds.HomeserverURL, "user_id", creds.UserID)
 	client, err := mautrix.NewClient(creds.HomeserverURL, p.userID, creds.AccessToken)
 	if err != nil {
 		return fmt.Errorf("failed to create Matrix client: %w", err)
 	}
 	if creds.DeviceID != "" {
 		client.DeviceID = id.DeviceID(creds.DeviceID)
+		slog.Debug("using device ID", "device_id", creds.DeviceID)
 	}
 	p.client = client
 
 	// Set up E2EE using a SQLite database for key storage
 	dbPath := filepath.Join(p.dir, "crypto.db")
+	slog.Debug("initializing E2EE crypto helper", "db_path", dbPath)
 	helper, err := cryptohelper.NewCryptoHelper(client, []byte("messages"), dbPath)
 	if err != nil {
 		return fmt.Errorf("failed to create crypto helper: %w", err)
@@ -95,6 +99,7 @@ func (p *MatrixProvider) Initialize() error {
 	p.cryptoHelper = helper
 	client.Crypto = helper
 
+	slog.Debug("matrix provider initialized successfully")
 	return nil
 }
 
@@ -107,12 +112,15 @@ func (p *MatrixProvider) Listen(ctx context.Context, w io.Writer) error {
 	enc := json.NewEncoder(w)
 
 	handleMessage := func(ctx context.Context, evt *event.Event) {
+		slog.Debug("received event", "type", evt.Type.Type, "sender", evt.Sender, "room_id", evt.RoomID, "event_id", evt.ID)
 		if evt.Sender == p.userID {
+			slog.Debug("skipping own message", "event_id", evt.ID)
 			return
 		}
 
 		content := evt.Content.AsMessage()
 		if content == nil {
+			slog.Debug("skipping non-message event", "event_id", evt.ID)
 			return
 		}
 
@@ -150,8 +158,10 @@ func (p *MatrixProvider) Close() error {
 }
 
 func (p *MatrixProvider) Send(ctx context.Context, roomID string, text string) error {
+	slog.Debug("preparing to send message", "room_id", roomID, "text_length", len(text))
 	// Do an initial sync so the crypto helper learns room encryption state
 	// and other users' device keys — required for encrypting outgoing messages.
+	slog.Debug("performing initial sync for E2EE key exchange")
 	resp, err := p.client.SyncRequest(ctx, 0, "", "", true, event.PresenceOffline)
 	if err != nil {
 		return fmt.Errorf("initial sync failed: %w", err)
@@ -163,8 +173,13 @@ func (p *MatrixProvider) Send(ctx context.Context, roomID string, text string) e
 	// Best-effort save of sync token; may fail for read-only stores.
 	_ = p.client.Store.SaveNextBatch(ctx, p.userID, resp.NextBatch)
 
+	slog.Debug("sending message", "room_id", roomID)
 	_, err = p.client.SendText(ctx, id.RoomID(roomID), text)
-	return err
+	if err != nil {
+		return err
+	}
+	slog.Debug("message sent successfully", "room_id", roomID)
+	return nil
 }
 
 func (p *MatrixProvider) getRoomDisplayName(ctx context.Context, roomID id.RoomID) string {
