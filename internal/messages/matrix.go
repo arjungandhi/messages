@@ -182,6 +182,42 @@ func (p *MatrixProvider) Send(ctx context.Context, roomID string, text string) e
 	return nil
 }
 
+func (p *MatrixProvider) FindOrCreateDM(ctx context.Context, userID string) (string, error) {
+	targetID := id.UserID(userID)
+
+	// Check m.direct account data for existing DM rooms with this user
+	var directChats map[id.UserID][]id.RoomID
+	err := p.client.GetAccountData(ctx, event.AccountDataDirectChats.Type, &directChats)
+	if err == nil {
+		if rooms, ok := directChats[targetID]; ok {
+			for _, roomID := range rooms {
+				// Verify we're still in this room
+				members, err := p.client.JoinedMembers(ctx, roomID)
+				if err != nil {
+					continue
+				}
+				if _, ok := members.Joined[targetID]; ok {
+					slog.Debug("found existing DM room", "room_id", roomID, "user_id", userID)
+					return string(roomID), nil
+				}
+			}
+		}
+	}
+
+	// No existing DM found, create one
+	slog.Debug("creating new DM room", "user_id", userID)
+	createResp, err := p.client.CreateRoom(ctx, &mautrix.ReqCreateRoom{
+		Invite:   []id.UserID{targetID},
+		IsDirect: true,
+		Preset:   "trusted_private_chat",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to create DM room: %w", err)
+	}
+	slog.Debug("created DM room", "room_id", createResp.RoomID, "user_id", userID)
+	return string(createResp.RoomID), nil
+}
+
 func (p *MatrixProvider) getRoomDisplayName(ctx context.Context, roomID id.RoomID) string {
 	var nameContent event.RoomNameEventContent
 	err := p.client.StateEvent(ctx, roomID, event.StateRoomName, "", &nameContent)

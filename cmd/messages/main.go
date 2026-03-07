@@ -244,8 +244,8 @@ var listenCmd = &cobra.Command{
 // --- send command ---
 
 var sendCmd = &cobra.Command{
-	Use:   "send [room-id] [message]",
-	Short: "send a message (via args or JSON lines on stdin)",
+	Use:   "send [target] [message]",
+	Short: "send a message to a room (!room_id) or user (@user:server) via args or JSON lines on stdin",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		provider, err := getProvider(accountFlag)
 		if err != nil {
@@ -253,10 +253,15 @@ var sendCmd = &cobra.Command{
 		}
 		ctx := context.Background()
 
-		// Args mode: messages send <room-id> <message>
+		// Args mode: messages send <target> <message>
+		// target can be a room ID (!...) or a user ID (@...)
 		if len(args) >= 2 {
-			roomID := args[0]
+			target := args[0]
 			text := strings.Join(args[1:], " ")
+			roomID, err := resolveTarget(ctx, provider, target)
+			if err != nil {
+				return err
+			}
 			slog.Debug("sending message via args", "room_id", roomID, "text", text)
 			if err := provider.Send(ctx, roomID, text); err != nil {
 				return err
@@ -278,12 +283,26 @@ var sendCmd = &cobra.Command{
 				fmt.Fprintf(os.Stderr, "invalid JSON line: %v\n", err)
 				continue
 			}
-			if msg.RoomID == "" || msg.Text == "" {
-				fmt.Fprintln(os.Stderr, "skipping message: room_id and text are required")
+			if msg.Text == "" {
+				fmt.Fprintln(os.Stderr, "skipping message: text is required")
 				continue
 			}
-			slog.Debug("sending message via stdin", "room_id", msg.RoomID, "text", msg.Text)
-			if err := provider.Send(ctx, msg.RoomID, msg.Text); err != nil {
+			// Resolve target: use room_id if set, otherwise resolve user_id
+			target := msg.RoomID
+			if target == "" {
+				target = msg.UserID
+			}
+			if target == "" {
+				fmt.Fprintln(os.Stderr, "skipping message: room_id or user_id is required")
+				continue
+			}
+			roomID, err := resolveTarget(ctx, provider, target)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "resolve error: %v\n", err)
+				continue
+			}
+			slog.Debug("sending message via stdin", "room_id", roomID, "text", msg.Text)
+			if err := provider.Send(ctx, roomID, msg.Text); err != nil {
 				fmt.Fprintf(os.Stderr, "send error: %v\n", err)
 				continue
 			}
@@ -293,6 +312,20 @@ var sendCmd = &cobra.Command{
 }
 
 // --- helpers ---
+
+// resolveTarget converts a target (room ID or user ID) to a room ID.
+// User IDs (starting with @) are resolved to DM rooms.
+func resolveTarget(ctx context.Context, provider messages.Provider, target string) (string, error) {
+	if strings.HasPrefix(target, "@") {
+		slog.Debug("resolving user ID to DM room", "user_id", target)
+		roomID, err := provider.FindOrCreateDM(ctx, target)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve user %s: %w", target, err)
+		}
+		return roomID, nil
+	}
+	return target, nil
+}
 
 func getProvider(accountName string) (messages.Provider, error) {
 	cfg := messages.NewConfig()
