@@ -218,6 +218,21 @@ func (p *MatrixProvider) FindOrCreateDM(ctx context.Context, userID string) (str
 	return string(createResp.RoomID), nil
 }
 
+func (p *MatrixProvider) ListRooms(ctx context.Context) ([]Room, error) {
+	resp, err := p.client.JoinedRooms(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list joined rooms: %w", err)
+	}
+	rooms := make([]Room, 0, len(resp.JoinedRooms))
+	for _, roomID := range resp.JoinedRooms {
+		rooms = append(rooms, Room{
+			ID:   string(roomID),
+			Name: p.getRoomDisplayName(ctx, roomID),
+		})
+	}
+	return rooms, nil
+}
+
 func (p *MatrixProvider) getRoomDisplayName(ctx context.Context, roomID id.RoomID) string {
 	var nameContent event.RoomNameEventContent
 	err := p.client.StateEvent(ctx, roomID, event.StateRoomName, "", &nameContent)

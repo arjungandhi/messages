@@ -24,6 +24,12 @@ type OutgoingMessage struct {
 	Text   string `json:"text"`
 }
 
+// Room represents a joined room/channel.
+type Room struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Provider is the interface for messaging backends.
 // Implementations handle protocol-specific details (Matrix, etc.)
 type Provider interface {
@@ -37,4 +43,6 @@ type Provider interface {
 	// FindOrCreateDM returns the room ID for a direct message with the given user,
 	// creating the DM room if one doesn't already exist.
 	FindOrCreateDM(ctx context.Context, userID string) (string, error)
+	// ListRooms returns all joined rooms.
+	ListRooms(ctx context.Context) ([]Room, error)
 }

@@ -19,6 +19,7 @@ import (
 
 var accountFlag string
 var verboseFlag bool
+var outputFlag string
 
 var rootCmd = &cobra.Command{
 	Use:   "messages",
@@ -223,6 +224,46 @@ var accountDefaultCmd = &cobra.Command{
 	},
 }
 
+// --- list commands ---
+
+var listCmd = &cobra.Command{
+	Use:   "list",
+	Short: "list resources",
+}
+
+var listRoomsCmd = &cobra.Command{
+	Use:   "rooms",
+	Short: "list joined rooms",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		provider, err := getProvider(accountFlag)
+		if err != nil {
+			return err
+		}
+		rooms, err := provider.ListRooms(context.Background())
+		if err != nil {
+			return err
+		}
+
+		switch outputFlag {
+		case "json":
+			enc := json.NewEncoder(os.Stdout)
+			for _, r := range rooms {
+				if err := enc.Encode(r); err != nil {
+					return err
+				}
+			}
+		default:
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "ID\tNAME")
+			for _, r := range rooms {
+				fmt.Fprintf(w, "%s\t%s\n", r.ID, r.Name)
+			}
+			w.Flush()
+		}
+		return nil
+	},
+}
+
 // --- listen command ---
 
 var listenCmd = &cobra.Command{
@@ -361,8 +402,11 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&accountFlag, "account", "a", "", "account to use (default: from config)")
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "enable debug logging")
 
+	listRoomsCmd.Flags().StringVarP(&outputFlag, "output", "o", "table", "output format (table, json)")
+	listCmd.AddCommand(listRoomsCmd)
+
 	accountCmd.AddCommand(accountAddCmd, accountListCmd, accountRemoveCmd, accountDefaultCmd)
-	rootCmd.AddCommand(accountCmd, listenCmd, sendCmd)
+	rootCmd.AddCommand(accountCmd, listCmd, listenCmd, sendCmd)
 }
 
 func main() {
