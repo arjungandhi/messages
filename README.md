@@ -4,10 +4,7 @@ A Unix-style Matrix bot.
 
 ```bash
 # Echo bot (using jq)
-messages listen | jq -c '{room_id: .room_id, text: .text}' | messages send
-
-# AI chatbot
-messages listen | my-ai-handler | messages send
+messages listen | jq --unbuffered -c '{room_id: .room_id, text: .text}' | messages send
 
 # Log all messages
 messages listen >> messages.log
