@@ -4,7 +4,7 @@ build:
 
 # Run all tests
 test:
-    go test ./...
+    go test -tags goolm ./...
 
 # Install the binary
 install:
