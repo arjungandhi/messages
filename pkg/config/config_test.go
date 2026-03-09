@@ -1,4 +1,4 @@
-package messages
+package config
 
 import (
 	"os"
@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-func TestNewConfig_Default(t *testing.T) {
+func TestNew_Default(t *testing.T) {
 	os.Unsetenv("MESSAGES_DIR")
-	cfg := NewConfig()
+	cfg := New()
 	home, _ := os.UserHomeDir()
 	want := filepath.Join(home, ".config", "messages")
 	if cfg.Dir != want {
@@ -16,9 +16,9 @@ func TestNewConfig_Default(t *testing.T) {
 	}
 }
 
-func TestNewConfig_EnvOverride(t *testing.T) {
+func TestNew_EnvOverride(t *testing.T) {
 	t.Setenv("MESSAGES_DIR", "/tmp/test-messages")
-	cfg := NewConfig()
+	cfg := New()
 	if cfg.Dir != "/tmp/test-messages" {
 		t.Errorf("got %s, want /tmp/test-messages", cfg.Dir)
 	}

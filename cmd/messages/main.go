@@ -12,7 +12,8 @@ import (
 	"syscall"
 	"text/tabwriter"
 
-	"github.com/arjungandhi/messages/internal/messages"
+	"github.com/arjungandhi/messages/pkg/config"
+	"github.com/arjungandhi/messages/pkg/messages"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 )
@@ -48,7 +49,7 @@ var accountAddCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		cfg := messages.NewConfig()
+		cfg := config.New()
 		if err := cfg.EnsureDir(); err != nil {
 			return err
 		}
@@ -114,7 +115,7 @@ var accountAddCmd = &cobra.Command{
 			return err
 		}
 
-		cfg.Accounts[name] = messages.AccountConfig{
+		cfg.Accounts[name] = config.AccountConfig{
 			Provider: "matrix",
 		}
 		if cfg.Default == "" {
@@ -135,7 +136,7 @@ var accountListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "list all accounts",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg := messages.NewConfig()
+		cfg := config.New()
 		if err := cfg.Load(); err != nil {
 			return err
 		}
@@ -163,7 +164,7 @@ var accountRemoveCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		cfg := messages.NewConfig()
+		cfg := config.New()
 		if err := cfg.Load(); err != nil {
 			return err
 		}
@@ -208,7 +209,7 @@ var accountDefaultCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		cfg := messages.NewConfig()
+		cfg := config.New()
 		if err := cfg.Load(); err != nil {
 			return err
 		}
@@ -235,11 +236,12 @@ var listRoomsCmd = &cobra.Command{
 	Use:   "rooms",
 	Short: "list joined rooms",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		provider, err := getProvider(accountFlag)
+		client, err := messages.New(nil, accountFlag)
 		if err != nil {
 			return err
 		}
-		rooms, err := provider.ListRooms(context.Background())
+		defer client.Close()
+		rooms, err := client.ListRooms(context.Background())
 		if err != nil {
 			return err
 		}
@@ -270,15 +272,16 @@ var listenCmd = &cobra.Command{
 	Use:   "listen",
 	Short: "listen for messages, output JSON lines to stdout",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		provider, err := getProvider(accountFlag)
+		client, err := messages.New(nil, accountFlag)
 		if err != nil {
 			return err
 		}
+		defer client.Close()
 
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
 
-		return provider.Listen(ctx, os.Stdout)
+		return client.Listen(ctx, os.Stdout)
 	},
 }
 
@@ -288,10 +291,11 @@ var sendCmd = &cobra.Command{
 	Use:   "send [target] [message]",
 	Short: "send a message to a room (!room_id) or user (@user:server) via args or JSON lines on stdin",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		provider, err := getProvider(accountFlag)
+		client, err := messages.New(nil, accountFlag)
 		if err != nil {
 			return err
 		}
+		defer client.Close()
 		ctx := context.Background()
 
 		// Args mode: messages send <target> <message>
@@ -299,12 +303,12 @@ var sendCmd = &cobra.Command{
 		if len(args) >= 2 {
 			target := args[0]
 			text := strings.Join(args[1:], " ")
-			roomID, err := resolveTarget(ctx, provider, target)
+			roomID, err := resolveTarget(ctx, client, target)
 			if err != nil {
 				return err
 			}
 			slog.Debug("sending message via args", "room_id", roomID, "text", text)
-			if err := provider.Send(ctx, roomID, text); err != nil {
+			if err := client.Send(ctx, roomID, text); err != nil {
 				return err
 			}
 			fmt.Fprintln(os.Stderr, "Message sent.")
@@ -337,13 +341,13 @@ var sendCmd = &cobra.Command{
 				fmt.Fprintln(os.Stderr, "skipping message: room_id or user_id is required")
 				continue
 			}
-			roomID, err := resolveTarget(ctx, provider, target)
+			roomID, err := resolveTarget(ctx, client, target)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "resolve error: %v\n", err)
 				continue
 			}
 			slog.Debug("sending message via stdin", "room_id", roomID, "text", msg.Text)
-			if err := provider.Send(ctx, roomID, msg.Text); err != nil {
+			if err := client.Send(ctx, roomID, msg.Text); err != nil {
 				fmt.Fprintf(os.Stderr, "send error: %v\n", err)
 				continue
 			}
@@ -356,46 +360,16 @@ var sendCmd = &cobra.Command{
 
 // resolveTarget converts a target (room ID or user ID) to a room ID.
 // User IDs (starting with @) are resolved to DM rooms.
-func resolveTarget(ctx context.Context, provider messages.Provider, target string) (string, error) {
+func resolveTarget(ctx context.Context, client *messages.Client, target string) (string, error) {
 	if strings.HasPrefix(target, "@") {
 		slog.Debug("resolving user ID to DM room", "user_id", target)
-		roomID, err := provider.FindOrCreateDM(ctx, target)
+		roomID, err := client.FindOrCreateDM(ctx, target)
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve user %s: %w", target, err)
 		}
 		return roomID, nil
 	}
 	return target, nil
-}
-
-func getProvider(accountName string) (messages.Provider, error) {
-	cfg := messages.NewConfig()
-	if err := cfg.Load(); err != nil {
-		return nil, err
-	}
-	name, acct, err := cfg.GetAccount(accountName)
-	if err != nil {
-		return nil, fmt.Errorf("%w. Run 'messages account add' first", err)
-	}
-	slog.Debug("using account", "name", name, "provider", acct.Provider)
-	acctDir := cfg.AccountDir(name)
-
-	var provider messages.Provider
-	switch acct.Provider {
-	case "matrix":
-		p, err := messages.NewMatrixProvider(acctDir)
-		if err != nil {
-			return nil, err
-		}
-		provider = p
-	default:
-		return nil, fmt.Errorf("unknown provider %q", acct.Provider)
-	}
-
-	if err := provider.Initialize(); err != nil {
-		return nil, fmt.Errorf("%w. Run 'messages account add %s' to set up credentials", err, name)
-	}
-	return provider, nil
 }
 
 func init() {

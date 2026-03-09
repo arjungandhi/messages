@@ -1,4 +1,4 @@
-package messages
+package config
 
 import (
 	"fmt"
@@ -18,7 +18,7 @@ type Config struct {
 	Accounts map[string]AccountConfig `yaml:"accounts"`
 }
 
-func NewConfig() *Config {
+func New() *Config {
 	cfg := &Config{Dir: defaultDir()}
 	if d := os.Getenv("MESSAGES_DIR"); d != "" {
 		cfg.Dir = d
