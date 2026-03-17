@@ -281,7 +281,19 @@ var listenCmd = &cobra.Command{
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
 
-		return client.Listen(ctx, os.Stdout)
+		ch, err := client.Listen(ctx)
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintln(os.Stderr, "Listening for messages...")
+		enc := json.NewEncoder(os.Stdout)
+		for msg := range ch {
+			if err := enc.Encode(msg); err != nil {
+				fmt.Fprintf(os.Stderr, "error writing message: %v\n", err)
+			}
+		}
+		return nil
 	},
 }
 

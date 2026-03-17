@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -104,14 +103,15 @@ func (p *MatrixProvider) Initialize() error {
 }
 
 // Listen uses the Matrix sync loop to long-poll for incoming messages.
-// Each message event (excluding our own) is written as a JSON line to w.
+// Returns a channel of IncomingMessage that is closed when ctx is cancelled.
 // Handles both plaintext and encrypted messages.
-// Blocks until ctx is cancelled.
-func (p *MatrixProvider) Listen(ctx context.Context, w io.Writer) error {
+func (p *MatrixProvider) Listen(ctx context.Context) (<-chan IncomingMessage, error) {
+	ch := make(chan IncomingMessage)
 	syncer := p.client.Syncer.(*mautrix.DefaultSyncer)
-	enc := json.NewEncoder(w)
 
-	handleMessage := func(ctx context.Context, evt *event.Event) {
+	// The crypto helper (client.Crypto) automatically decrypts encrypted
+	// events and re-dispatches them as EventMessage, so we only need this handler.
+	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
 		slog.Debug("received event", "type", evt.Type.Type, "sender", evt.Sender, "room_id", evt.RoomID, "event_id", evt.ID)
 		if evt.Sender == p.userID {
 			slog.Debug("skipping own message", "event_id", evt.ID)
@@ -134,20 +134,22 @@ func (p *MatrixProvider) Listen(ctx context.Context, w io.Writer) error {
 			EventID:    string(evt.ID),
 		}
 
-		if err := enc.Encode(msg); err != nil {
-			fmt.Fprintf(os.Stderr, "error writing message: %v\n", err)
+		select {
+		case ch <- msg:
+		case <-ctx.Done():
 		}
-	}
-
-	// The crypto helper (client.Crypto) automatically decrypts encrypted
-	// events and re-dispatches them as EventMessage, so we only need this handler.
-	syncer.OnEventType(event.EventMessage, handleMessage)
+	})
 
 	p.client.SyncPresence = event.PresenceOffline
 
-	fmt.Fprintln(os.Stderr, "Listening for messages...")
-	defer p.Close()
-	return p.client.SyncWithContext(ctx)
+	go func() {
+		defer close(ch)
+		if err := p.client.SyncWithContext(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("sync error", "error", err)
+		}
+	}()
+
+	return ch, nil
 }
 
 func (p *MatrixProvider) Close() error {

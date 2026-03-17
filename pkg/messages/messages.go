@@ -3,13 +3,12 @@ package messages
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 
 	"github.com/arjungandhi/messages/pkg/config"
 )
 
-// IncomingMessage is what `listen` outputs as JSON lines to stdout.
+// IncomingMessage is a message received from a room.
 type IncomingMessage struct {
 	RoomID     string `json:"room_id"`
 	RoomName   string `json:"room_name"`
@@ -20,8 +19,8 @@ type IncomingMessage struct {
 	EventID    string `json:"event_id"`
 }
 
-// OutgoingMessage is what `send` reads from stdin as JSON lines.
-// Either room_id or user_id must be set. If user_id is set, a DM room is found or created.
+// OutgoingMessage is a message to send to a room or user.
+// Either RoomID or UserID must be set. If UserID is set, a DM room is found or created.
 type OutgoingMessage struct {
 	RoomID string `json:"room_id"`
 	UserID string `json:"user_id"`
@@ -34,10 +33,20 @@ type Room struct {
 	Name string `json:"name"`
 }
 
+// Provider is the interface that must be satisfied by a messaging backend.
+type Provider interface {
+	Initialize() error
+	Listen(ctx context.Context) (<-chan IncomingMessage, error)
+	Send(ctx context.Context, roomID string, text string) error
+	FindOrCreateDM(ctx context.Context, userID string) (string, error)
+	ListRooms(ctx context.Context) ([]Room, error)
+	Close() error
+}
+
 // Client is the main entry point for interacting with messages.
 type Client struct {
 	Config   *config.Config
-	provider *MatrixProvider
+	provider Provider
 }
 
 // New creates a new Client for the given account. If cfg is nil, default config is used.
@@ -58,7 +67,7 @@ func New(cfg *config.Config, accountName string) (*Client, error) {
 
 	acctDir := cfg.AccountDir(name)
 
-	var provider *MatrixProvider
+	var provider Provider
 	switch acct.Provider {
 	case "matrix":
 		p, err := NewMatrixProvider(acctDir)
@@ -85,10 +94,10 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Listen long-polls for incoming messages, writing JSON lines to w.
-// Blocks until ctx is cancelled.
-func (c *Client) Listen(ctx context.Context, w io.Writer) error {
-	return c.provider.Listen(ctx, w)
+// Listen long-polls for incoming messages, returning a channel of IncomingMessage.
+// The channel is closed when ctx is cancelled.
+func (c *Client) Listen(ctx context.Context) (<-chan IncomingMessage, error) {
+	return c.provider.Listen(ctx)
 }
 
 // Send sends a text message to a room.
